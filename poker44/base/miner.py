@@ -114,6 +114,7 @@ class BaseMinerNeuron(BaseNeuron):
     def common_blacklist(self, synapse: DetectionSynapse):
         """Shared miner admission policy with optional validator allowlist."""
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
+            print("[REQUEST] rejected reason=missing_dendrite_or_hotkey", flush=True)
             bt.logging.warning("Received a request without a dendrite or hotkey.")
             return True, "Missing dendrite or hotkey"
 
@@ -122,38 +123,89 @@ class BaseMinerNeuron(BaseNeuron):
 
         if whitelist:
             if hotkey in whitelist:
+                print(
+                    f"[REQUEST] allowed hotkey={hotkey} reason=whitelisted_validator",
+                    flush=True,
+                )
                 bt.logging.trace(f"Allowing whitelisted validator hotkey {hotkey}")
                 return False, "Whitelisted validator hotkey"
+            print(
+                f"[REQUEST] rejected hotkey={hotkey} reason=not_in_validator_allowlist",
+                flush=True,
+            )
             bt.logging.warning(f"Blacklisting non-whitelisted hotkey {hotkey}")
             return True, "Hotkey not in validator allowlist"
 
         if hotkey not in self.metagraph.hotkeys:
             if not self.config.blacklist.allow_non_registered:
+                print(
+                    f"[REQUEST] rejected hotkey={hotkey} reason=unregistered",
+                    flush=True,
+                )
                 bt.logging.trace(f"Blacklisting un-registered hotkey {hotkey}")
                 return True, "Unrecognized hotkey"
+            print(
+                f"[REQUEST] allowed hotkey={hotkey} reason=non_registered_allowed",
+                flush=True,
+            )
             return False, "Non-registered hotkey allowed"
 
         uid = self.metagraph.hotkeys.index(hotkey)
         if self.config.blacklist.force_validator_permit and not self.metagraph.validator_permit[uid]:
+            print(
+                f"[REQUEST] rejected hotkey={hotkey} uid={uid} reason=non_validator_hotkey",
+                flush=True,
+            )
             bt.logging.warning(f"Blacklisting a request from non-validator hotkey {hotkey}")
             return True, "Non-validator hotkey"
 
+        print(
+            f"[REQUEST] allowed hotkey={hotkey} uid={uid} reason=recognized_validator",
+            flush=True,
+        )
         bt.logging.trace(f"Not blacklisting recognized hotkey {hotkey}")
         return False, "Hotkey recognized"
 
     def caller_priority(self, synapse: DetectionSynapse) -> float:
-        if synapse.dendrite is None or synapse.dendrite.hotkey is None:
-            bt.logging.warning("Received a request without a dendrite or hotkey.")
-            return 0.0
+        try:
+            if synapse.dendrite is None or synapse.dendrite.hotkey is None:
+                print("[PRIORITY] fallback reason=missing_dendrite_or_hotkey", flush=True)
+                bt.logging.warning("Received a request without a dendrite or hotkey.")
+                return 0.0
 
-        hotkey = synapse.dendrite.hotkey
-        if hotkey not in self.metagraph.hotkeys:
-            return 0.0
+            hotkey = synapse.dendrite.hotkey
+            if hotkey not in self.metagraph.hotkeys:
+                print(
+                    f"[PRIORITY] fallback hotkey={hotkey} reason=unregistered",
+                    flush=True,
+                )
+                return 0.0
 
-        caller_uid = self.metagraph.hotkeys.index(hotkey)
-        priority = float(self.metagraph.S[caller_uid])
-        bt.logging.trace(f"Prioritizing {hotkey} with value: {priority}")
-        return priority
+            caller_uid = self.metagraph.hotkeys.index(hotkey)
+            stake_values = getattr(self.metagraph, "S", None)
+            raw_priority = float(stake_values[caller_uid]) if stake_values is not None else 0.0
+            validator_permits = getattr(self.metagraph, "validator_permit", None)
+            has_validator_permit = (
+                bool(validator_permits[caller_uid])
+                if validator_permits is not None and caller_uid < len(validator_permits)
+                else False
+            )
+            priority = max(raw_priority, 1_000_000.0) if has_validator_permit else raw_priority
+            request_uuid = getattr(getattr(synapse, "dendrite", None), "uuid", "")
+            chunk_count = len(getattr(synapse, "chunks", []) or [])
+            print(
+                f"[PRIORITY] hotkey={hotkey} uid={caller_uid} "
+                f"priority={priority} raw_priority={raw_priority} "
+                f"validator_permit={has_validator_permit} chunks={chunk_count} "
+                f"uuid={request_uuid}",
+                flush=True,
+            )
+            bt.logging.trace(f"Prioritizing {hotkey} with value: {priority}")
+            return priority
+        except Exception as exc:
+            print(f"[PRIORITY] fallback reason=exception error={exc}", flush=True)
+            bt.logging.warning(f"Priority calculation failed; using 0.0: {exc}")
+            return 0.0
 
     def run(self):
         """
@@ -178,20 +230,45 @@ class BaseMinerNeuron(BaseNeuron):
             Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
 
-        # Check that miner is registered on the network.
-        self.sync()
-
         # Serve passes the axon information to the network + netuid we are hosting on.
         # This will auto-update if the axon port of external ip have changed.
         bt.logging.info(
             f"Serving miner axon {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
         )
-        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+        print(
+            "[STARTUP] serving axon "
+            f"netuid={self.config.netuid} "
+            f"network={getattr(self.config.subtensor, 'chain_endpoint', None)} "
+            f"external={getattr(self.config.axon, 'external_ip', None)}:{getattr(self.config.axon, 'external_port', None)}",
+            flush=True,
+        )
+        try:
+            self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+            print(
+                "[STARTUP] axon served on-chain "
+                f"uid={self.uid} "
+                f"external={getattr(self.config.axon, 'external_ip', None)}:{getattr(self.config.axon, 'external_port', None)}",
+                flush=True,
+            )
+            bt.logging.success(
+                f"Miner axon served on-chain | uid={self.uid} "
+                f"ip={getattr(self.config.axon, 'external_ip', None) or getattr(self.config.axon, 'ip', None)} "
+                f"port={getattr(self.config.axon, 'external_port', None) or getattr(self.config.axon, 'port', None)}"
+            )
+        except Exception:
+            bt.logging.error(f"Failed to serve miner axon:\n{traceback.format_exc()}")
+            raise
 
         # Start  starts the miner's axon, making it active on the network.
         self.axon.start()
+        print("[STARTUP] axon HTTP server started", flush=True)
+        bt.logging.success("Miner axon HTTP server started.")
+
+        # Check/sync after serving so metagraph RPC issues do not block axon publication.
+        self.sync()
 
         bt.logging.info(f"Miner starting at block: {self.block}")
+        print(f"[STARTUP] miner loop active block={self.block}", flush=True)
 
         # This loop maintains the miner's operations until intentionally stopped.
         try:

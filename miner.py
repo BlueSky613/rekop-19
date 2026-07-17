@@ -64,8 +64,18 @@ def _report_query(uid, validator, scores):
 class Miner(BaseMinerNeuron):
     def __init__(self, config=None):
         super().__init__(config=config)
+        print("[STARTUP] Poker44 submission miner started", flush=True)
         repo_root = Path(__file__).resolve().parent
         self.model = Poker44Model()
+        print(
+            f"[MODEL] loaded joblib path={_MODEL_PATH} "
+            f"name={self._model_name(self.model.metadata)} "
+            f"version={self._model_version(self.model.metadata)} "
+            f"models={len(self.model.models)} "
+            f"features={len(self.model.feature_names)} "
+            f"safety={SAFETY_MODE}",
+            flush=True,
+        )
         # Auto-reload when daily_update refreshes the joblib artifact.
         self._model_mtime = _MODEL_PATH.stat().st_mtime if _MODEL_PATH.exists() else 0.0
         threading.Thread(target=self._reload_watcher, daemon=True).start()
@@ -175,10 +185,19 @@ class Miner(BaseMinerNeuron):
 
     async def forward(self, synapse: DetectionSynapse) -> DetectionSynapse:
         chunks = synapse.chunks or []
+        print(f"[FORWARD] received chunks={len(chunks)}", flush=True)
         try:
             scores = self.model.predict_chunk_scores(chunks)
+            if len(scores) != len(chunks):
+                raise ValueError(
+                    f"model returned {len(scores)} scores for {len(chunks)} chunks"
+                )
         except Exception as e:
             # Always return the correct response length; validators discard malformed replies.
+            print(
+                f"[FORWARD] batch_score_failed error={e}; using fallback scores",
+                flush=True,
+            )
             bt.logging.error(f"Inference failed, using fallback scores: {e}")
             n = len(chunks)
             k = max(1, n // 10) if n < 8 else max(2, n // 10)
@@ -193,6 +212,12 @@ class Miner(BaseMinerNeuron):
             _report_query(getattr(self, "uid", None), vhot, scores)
         except Exception:
             pass
+        mean_score = sum(scores) / len(scores) if scores else 0.0
+        print(
+            f"[FORWARD] scored chunks={len(chunks)} scores={len(scores)} "
+            f"mean={mean_score:.4f} first_scores={[round(score, 4) for score in scores[:20]]}",
+            flush=True,
+        )
         return synapse
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
@@ -204,7 +229,13 @@ class Miner(BaseMinerNeuron):
 
 if __name__ == "__main__":
     with Miner() as miner:
+        print("[STARTUP] Poker44 miner running", flush=True)
         bt.logging.info("Poker44 submission miner running...")
         while True:
+            print(
+                f"[HEARTBEAT] uid={miner.uid} block={miner.block} "
+                f"incentive={miner.metagraph.I[miner.uid]}",
+                flush=True,
+            )
             bt.logging.info(f"UID {miner.uid} | Incentive {miner.metagraph.I[miner.uid]}")
             time.sleep(300)

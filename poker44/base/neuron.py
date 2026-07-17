@@ -104,6 +104,15 @@ class BaseNeuron(ABC):
         self.config.merge(base_config)
         self._apply_direct_overrides()
         self.check_config(self.config) 
+        print(
+            "[STARTUP] config "
+            f"netuid={getattr(self.config, 'netuid', None)} "
+            f"wallet={getattr(self.config.wallet, 'name', None)} "
+            f"hotkey={getattr(self.config.wallet, 'hotkey', None)} "
+            f"axon={getattr(self.config.axon, 'ip', None)}:{getattr(self.config.axon, 'port', None)} "
+            f"external={getattr(self.config.axon, 'external_ip', None)}:{getattr(self.config.axon, 'external_port', None)}",
+            flush=True,
+        )
 
         # Version check
         self.parse_versions()
@@ -129,6 +138,13 @@ class BaseNeuron(ABC):
                 bt.logging.info("Initializing subtensor and metagraph")
                 self.subtensor = self._build_subtensor()
                 self.metagraph = self._load_metagraph()
+                print(
+                    "[STARTUP] bittensor ready "
+                    f"network={getattr(self.subtensor, 'chain_endpoint', None)} "
+                    f"metagraph_n={getattr(self.metagraph, 'n', None)} "
+                    f"fallback={getattr(self.metagraph, 'is_fallback', False)}",
+                    flush=True,
+                )
                 break
             except Exception as e:
                 bt.logging.error(
@@ -148,6 +164,12 @@ class BaseNeuron(ABC):
 
         # Each miner gets a unique identity (UID) in the network for differentiation.
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        print(
+            "[STARTUP] registered "
+            f"netuid={self.config.netuid} uid={self.uid} "
+            f"hotkey={self.wallet.hotkey.ss58_address}",
+            flush=True,
+        )
         bt.logging.info(
             f"Running neuron on subnet: {self.config.netuid} with uid {self.uid} using network: {self.subtensor.chain_endpoint}"
         )
