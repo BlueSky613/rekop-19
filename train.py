@@ -1,13 +1,13 @@
-"""풀이 B (안정형, uid152) — 최종 레시피 v4 (2026-07-17).
+"""Solution B stable recipe v4 for 2026-07-17.
 
-핵심 (전부 실측 근거):
-  · payload 미러링 — 안 하면 서빙에서 0.92→0.00
-  · ★혼합모양 학습: 원판(30~40핸드) + 병합100핸드 — 라이브 질의가 100핸드 배치라
-    원판만 학습하면 comp 0.78, 100핸드 학습하면 0.95 (+0.1675)
-  · 병합가중 1.0 — 두 모양 균등 (B의 원칙: 어떤 모양이 와도 안정)
-  · recency 반감기 4 — 실측 최적 (극단 1~2와 장기 7~10은 손해)
-  · 보수적 앙상블: 서로 다른 하이퍼의 LGBM×3 + HistGB×2 + RF + LogReg, 규제 강함
-사용: python train.py --all   (전체 데이터로 최종 학습)
+Key measured choices:
+  - Mirror the served payload view; skipping this breaks live behavior.
+  - Train on mixed shapes: original 30-40 hand batches plus merged 100-hand batches.
+  - Use equal merged-batch weight so the model stays robust across query shapes.
+  - Use recency half-life 4, which was best in local tests.
+  - Use a conservative ensemble: LGBM x3, HistGB x2, RF, and LogReg.
+
+Usage: python train.py --all
 """
 import copy
 import json
@@ -37,9 +37,9 @@ ROOT = _root(HERE)
 CHUNK_DIR = ROOT / "02_benchmark_data" / "chunks"
 OUT = HERE / "model"; OUT.mkdir(exist_ok=True)
 
-MIN_DATE = "2026-07-06"        # 현재 생성기 시대만
-HALFLIFE = 4.0                 # B: 실측 최적 반감기
-MERGED_BOOST = 1.0             # B: 모양 균등 — 원칙 고수
+MIN_DATE = "2026-07-06"        # current generator era only
+HALFLIFE = 4.0                 # best measured half-life
+MERGED_BOOST = 1.0             # equal shape weighting
 MAX_MERGED_PER_DAY_LABEL = 60
 
 
@@ -54,12 +54,12 @@ def _mirror():
                 sys.path.insert(0, str(c))
                 from poker44.validator.payload_view import prepare_hand_for_miner
                 return prepare_hand_for_miner
-    raise RuntimeError("prepare_hand_for_miner 없음")
+    raise RuntimeError("prepare_hand_for_miner not found")
 
 
 def load(mirror):
-    """원판 배치 + 병합100 배치(같은 날·같은 라벨 3개 이어붙임, 겹침, 상한)."""
-    feats, ys, dates, shapes = [], [], [], []   # shape 0=원판, 1=병합100
+    """Load original batches plus merged 100-hand batches from same-day labels."""
+    feats, ys, dates, shapes = [], [], [], []   # shape 0=original, 1=merged100
     for p in sorted(CHUNK_DIR.glob("*.json")):
         if p.stem < MIN_DATE:
             continue
@@ -68,7 +68,7 @@ def load(mirror):
         per_label = {0: [], 1: []}
         for rec in b["chunks"]:
             for bag, y in zip(rec["chunks"], rec["groundTruth"]):
-                hands = [mirror(copy.deepcopy(h)) for h in bag]   # ★서빙 동일 변환
+                hands = [mirror(copy.deepcopy(h)) for h in bag]   # match serving transform
                 feats.append(chunk_features(hands)); ys.append(int(y))
                 dates.append(d); shapes.append(0)
                 per_label[int(y)].append(hands)
@@ -88,11 +88,11 @@ def load(mirror):
 
 def main(train_on_all=True):
     mirror = _mirror()
-    print("풀이 B v4: 미러링 + 혼합모양(원판+병합100) 균등 + 반감기 4 + 보수 앙상블")
+    print("Solution B v4: mirrored payload + balanced mixed shapes + half-life 4 + conservative ensemble")
     feats, y, dates, shapes = load(mirror)
     cols = sorted({k for f in feats for k in f})
     X = np.array([[f.get(n, 0.0) for n in cols] for f in feats], np.float64)
-    print(f"rows={len(y)} (원판 {(shapes==0).sum()}, 병합100 {(shapes==1).sum()}) features={len(cols)} bot_rate={y.mean():.3f}")
+    print(f"rows={len(y)} (original {(shapes==0).sum()}, merged100 {(shapes==1).sum()}) features={len(cols)} bot_rate={y.mean():.3f}")
 
     held = [] if train_on_all else sorted(set(dates.tolist()))[-1:]
     mask = np.ones(len(y), bool) if train_on_all else np.array([d not in set(held) for d in dates])

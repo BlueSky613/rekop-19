@@ -21,5 +21,5 @@ def chunk_features(chunk):
     for k, v in ours.items():                         # + only the honest signals
         if k.startswith(_HONEST_PREFIXES):
             f[k] = v
-    f.update(_creative_features(chunk))               # + 창의 피처(cr_*): 상호작용·고차모멘트·다중유사성 (+0.0198 검증)
+    f.update(_creative_features(chunk))               # + creative cr_* interaction, moment, and similarity features
     return f

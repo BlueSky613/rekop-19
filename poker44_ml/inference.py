@@ -23,7 +23,7 @@ from poker44_ml.combined import chunk_features
 _MODEL = Path(__file__).resolve().parent.parent / "model" / "poker44_model.joblib"
 
 # Per-folder default is set in each solution's copy of this file.
-SAFETY_MODE = os.environ.get("POKER44_SAFETY_MODE", "honest").strip().lower()  # 이 폴더 기본
+SAFETY_MODE = os.environ.get("POKER44_SAFETY_MODE", "honest").strip().lower()  # folder default
 
 
 def _install_sklearn_pickle_compat():
@@ -53,19 +53,18 @@ class Poker44Model:
         self.metadata = dict(art.get("metadata") or {})
 
     def _rows(self, chunks):
-        # chunk_features는 청크당 1회만. 내포 루프 안에 두면 피처이름 수(343)만큼
-        # 재호출되어 90배치 질의가 496초 → 검증자 timeout(180초) 초과 → 응답 폐기 → 0점.
+        # Run chunk_features once per chunk; repeating it per feature is too slow.
         feats = []
         for c in chunks:
             try:
                 feats.append(chunk_features(c))
             except Exception:
-                feats.append({})  # 결손 청크는 0벡터 — 응답 길이 보존이 0점 방지의 전부
+                feats.append({})  # keep response length even if a chunk cannot be parsed
         X = np.array(
             [[f.get(n, 0.0) for n in self.feature_names] for f in feats],
             dtype=np.float64,
         )
-        # RandomForest 등은 NaN 입력에서 예외 → 질의 전체가 죽는다. 반드시 소독.
+        # Some models reject NaN input, so sanitize before prediction.
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _blend(self, X):
@@ -86,7 +85,7 @@ class Poker44Model:
             return p
         k = max(1, int(math.floor(0.10 * n)))
         if n >= 8:
-            k = max(k, 2)   # 작은창 tp=0 몰수 방지: 최소 2개 플래그(랭킹·composite 불변, safety만 견고)
+            k = max(k, 2)   # avoid tp=0 on small windows
         order = np.argsort(-p, kind="mergesort")
         if mode == "band":
             ph, pl, nh, nl = 0.509, 0.501, 0.490, 0.010
@@ -106,8 +105,7 @@ class Poker44Model:
         try:
             raw = self._blend(self._rows(chunks))
         except Exception:
-            # 최후 안전망: 무슨 일이 있어도 올바른 길이로 응답한다.
-            # 결정적 의사순위 + 캡 → 순위가 무작위여도 composite ~0.54 (몰수 0), 예외로 잃으면 0.
+            # Last-resort guard: always respond with the correct length.
             n = len(chunks)
             raw = np.array([((i * 2654435761) % 997) / 997.0 for i in range(n)], dtype=np.float64)
         scores = self._safe_topk(raw, "band" if SAFETY_MODE == "band" else "honest")

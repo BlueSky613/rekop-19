@@ -29,8 +29,8 @@ from poker44.validator.synapse import DetectionSynapse
 
 from poker44_ml.inference import Poker44Model, SAFETY_MODE, _MODEL as _MODEL_PATH
 
-# 대시보드로 쿼리별 상세(밸리데이터·청크별 점수) 보고 — 07_live_dashboard가 표시.
-# 원격 대시보드로 보내려면:  POKER44_REPORT_URL=http://<대시보드IP>:8127  환경변수 설정.
+# Report per-query validator and chunk scores to the optional live dashboard.
+# To send to a remote dashboard, set POKER44_REPORT_URL=http://<dashboard-ip>:8127.
 REPORT_URL = os.environ.get("POKER44_REPORT_URL", "").strip().rstrip("/")
 _QLOG = os.environ.get("POKER44_QUERY_LOG", "queries.jsonl")
 
@@ -68,7 +68,7 @@ class Miner(BaseMinerNeuron):
         super().__init__(config=config)
         repo_root = Path(__file__).resolve().parent
         self.model = Poker44Model()
-        # ★자동 리로드: daily_update가 joblib을 갱신하면 재시작 없이 반영 (재학습 실제 적용)
+        # Auto-reload when daily_update refreshes the joblib artifact.
         self._model_mtime = _MODEL_PATH.stat().st_mtime if _MODEL_PATH.exists() else 0.0
         threading.Thread(target=self._reload_watcher, daemon=True).start()
         self.model_manifest = build_local_model_manifest(
@@ -157,8 +157,7 @@ class Miner(BaseMinerNeuron):
         return cls._clean_text(metadata.get("built")) or "1.0"
 
     def _reload_watcher(self, every=60):
-        """daily_update가 model/poker44_model.joblib 을 갱신하면 자동으로 새 모델 로드.
-        참조 스왑이라 원자적 — 재시작·쿼리중단 없이 재학습 결과가 반영된다."""
+        """Load a refreshed model without restarting when daily_update updates the joblib."""
         while True:
             time.sleep(every)
             try:
@@ -166,32 +165,30 @@ class Miner(BaseMinerNeuron):
                     continue
                 mt = _MODEL_PATH.stat().st_mtime
                 if mt > self._model_mtime + 1:
-                    new_model = Poker44Model()          # 갱신된 joblib 로드
-                    self.model = new_model               # 원자적 교체
+                    new_model = Poker44Model()          # load refreshed joblib
+                    self.model = new_model               # atomic reference swap
                     self._model_mtime = mt
                     bt.logging.info(
-                        f"🔄 모델 자동 재로드 (재학습 반영) | models={len(new_model.models)} "
+                        f"Model auto-reloaded | models={len(new_model.models)} "
                         f"name={new_model.metadata.get('name')}"
                     )
             except Exception as e:
-                bt.logging.warning(f"모델 재로드 실패(옛 모델 유지): {e}")
+                bt.logging.warning(f"Model reload failed; keeping previous model: {e}")
 
     async def forward(self, synapse: DetectionSynapse) -> DetectionSynapse:
         chunks = synapse.chunks or []
         try:
             scores = self.model.predict_chunk_scores(chunks)
         except Exception as e:
-            # 절대 예외로 응답을 잃지 않는다 — 길이 안 맞으면 검증자가 통째로 폐기 → 0점.
-            bt.logging.error(f"추론 실패, 폴백 점수 사용: {e}")
+            # Always return the correct response length; validators discard malformed replies.
+            bt.logging.error(f"Inference failed, using fallback scores: {e}")
             n = len(chunks)
             k = max(1, n // 10) if n < 8 else max(2, n // 10)
             scores = [0.55 if i < k else 0.05 for i in range(n)]
         synapse.risk_scores = scores
         synapse.predictions = [s >= 0.5 for s in scores]
         synapse.model_manifest = dict(self.model_manifest)
-        # ★매니페스트 전송 안 함 (manifestPresent=False) — 상위10 전원 이렇게 함.
-        #   보내면 리뷰 실패 시 -0.10~-0.22 벌점(152가 -0.10 물고 있음). 안 보내면 벌점 0.
-        # synapse.model_manifest = None  # 기본값 유지
+        # Attach the manifest so validators can review the deployed implementation.
         bt.logging.info(f"Scored {len(chunks)} chunks | mean={sum(scores)/max(len(scores),1):.3f}")
         try:
             vhot = getattr(getattr(synapse, "dendrite", None), "hotkey", None)  # querying validator

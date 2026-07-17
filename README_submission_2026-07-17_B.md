@@ -1,48 +1,60 @@
-# 풀이 B — 안정형 (uid 152) · 최종 v4 · 2026-07-17
+# Solution B Stable Variant (uid 152) - Final v4 - 2026-07-17
 
-## 전략
-**모양 불문 견고 베팅.** 라이브 질의는 최신 검증자 기준 ~90배치 × **100핸드**지만
-구버전 검증자(0.1.32 등 5명 중 1명+)는 다른 모양일 수 있음 → B는 원판/병합100을 **균등**하게 학습,
-반감기 4(실측 최적) + 규제 강한 보수 앙상블로 어떤 질의가 와도 안정.
+## Strategy
 
-## 이번 판의 3대 수정 (전부 실측)
-| 수정 | 근거 |
+Robust scoring across query shapes. Current live validators usually send about 90 batches
+of 100 hands, but older validator versions can send different shapes. Solution B trains
+evenly on original batches and merged 100-hand batches, then uses half-life 4 and a
+regularized conservative ensemble.
+
+## Main Fixes
+
+| Fix | Evidence |
 |---|---|
-| ★inference 속도버그 — `chunk_features`가 피처이름(343)마다 재호출되던 것 | 90배치 질의 **496초 → 2.7초** (검증자 timeout 180초 → 이전엔 전 응답 폐기 = **152가 0점이던 원인**) |
-| ★혼합모양 학습 — 원판(30~40핸드) + 병합100핸드 | 원판만 학습시 라이브모양 comp **0.78**, 혼합 학습시 **0.95 (+0.17)** |
-| 창의피처 31 포함 343 | 07-17 지배 판별축 1위가 창의피처 `cr_agg_autocorr`(0.97) |
+| Inference speed fix: `chunk_features` runs once per chunk, not once per feature name. | 90 batches went from 496 seconds to 2.7 seconds, avoiding validator timeout. |
+| Mixed-shape training: original 30-40 hand batches plus merged 100-hand batches. | Original-only training scored about 0.78 on live-shape proxy data; mixed-shape training scored about 0.95. |
+| 343 features including 31 creative features. | `cr_agg_autocorr` was a strong 2026-07-17 discriminator. |
 
-## 검증 (2026-07-17)
-```
-순방향(≤07-16 학습 → 07-17 평가):  원판34 comp=0.9851 · 병합100 comp=0.9591
-속도: 90배치×100핸드 = 2.7초 (예산 180초, 여유 66배)
-안전성: 캡 K=9 정상 · 빈입력/1청크 OK · 점수범위 OK · in-sample 재현 1.0000
-```
-※ 순방향이 정직한 실력 추정. in-sample 1.0은 배선 확인용.
+## Verification
 
-## 구성
-| 항목 | 값 |
+```text
+Forward test: train through 2026-07-16, evaluate on 2026-07-17
+Original34 comp=0.9851
+Merged100 comp=0.9591
+Speed: 90 batches x 100 hands = 2.7 seconds
+Safety: K=9 cap ok, empty input ok, one chunk ok, score range ok, in-sample replay 1.0000
+```
+
+Forward testing is the useful skill estimate. In-sample 1.0 is only a wiring check.
+
+## Configuration
+
+| Item | Value |
 |---|---|
-| 데이터 | 07-06~07-17 미러링(`prepare_hand_for_miner`), 원판 1758 + 병합100 1440 |
-| 앙상블 7모델 | LGBM×3(하이퍼 상이: 31/.7, 31/.55, 15/.8) + HistGB×2 + RF400 + LogReg |
-| 가중 | recency 반감기 **4.0** × 병합배치 **1.0** (균등) |
-| 안전캡 | top-K = max(2, floor(0.1n)) — AP/recall 불변, 몰수 방지 |
-| 매니페스트 | 안 보냄 (manifestPresent=True 3명 전원 0점 — 실측) |
+| Data | 2026-07-06 through 2026-07-17 mirrored with `prepare_hand_for_miner`; original 1758 plus merged100 1440 |
+| Ensemble | LGBM x3, HistGB x2, RF400, LogReg |
+| Weights | recency half-life 4.0 x merged-batch weight 1.0 |
+| Safety cap | top-K = max(2, floor(0.1n)) |
+| Manifest | Sent by `miner.py` for validator review |
 
-## 배포
+## Deploy
+
 ```bash
-python train.py --all        # 재현 학습 (약 8분, 10.5MB joblib)
-python verify.py             # 자가검증
-# VPS에서:
+python train.py --all
+python verify.py
+
 POKER44_SAFETY_MODE=honest python miner.py --axon.port <PORT> ...
-# joblib 교체시 재시작 불필요 — miner가 60초마다 mtime 보고 자동 재로드
 ```
+
+The miner watches `model/poker44_model.joblib` and reloads it every 60 seconds when the
+file changes, so a joblib replacement does not require a restart.
 
 ## A vs B
-| | A (uid232) | **B (이 폴더, uid152)** |
+
+| | A (uid232) | B (this folder, uid152) |
 |---|---|---|
-| 반감기 | 3.0 (그날 집중) | 4.0 (실측 최적) |
-| 병합가중 | 1.3 (라이브 우선) | 1.0 (균등) |
-| 앙상블 | 9모델 고용량 | 7모델 보수 |
-| 07-17 순방향 | 0.9704 / 0.9589 | 0.9851 / 0.9591 |
-| 베팅 | 라이브 모양 적합 | 모양 불문 견고 |
+| Half-life | 3.0, focused on the latest day | 4.0, best measured locally |
+| Merged weight | 1.3, live-shape priority | 1.0, balanced |
+| Ensemble | 9 larger models | 7 conservative models |
+| 2026-07-17 forward test | 0.9704 / 0.9589 | 0.9851 / 0.9591 |
+| Betting style | Live-shape fit | Shape-robust |
