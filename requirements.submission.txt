@@ -1,0 +1,5 @@
+# joblib 언피클 호환을 위해 학습 환경과 동일 버전 고정 (공개 릴리스만 사용)
+numpy==2.2.6
+scikit-learn==1.7.2
+lightgbm==4.6.0
+joblib==1.5.3
