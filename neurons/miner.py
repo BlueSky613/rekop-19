@@ -7,8 +7,6 @@ This lets the project run with the usual Poker44 command:
 while keeping the actual implementation in the repository root at `miner.py`.
 """
 
-from __future__ import annotations
-
 import runpy
 import sys
 from pathlib import Path

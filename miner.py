@@ -4,8 +4,6 @@ Copy this repo's poker44_ml/, model/poker44_model.joblib, and this file into the
 Poker44-subnet checkout (replacing neurons/miner.py), then run like the reference miner.
 """
 
-from __future__ import annotations
-
 import json
 import hashlib
 import os
