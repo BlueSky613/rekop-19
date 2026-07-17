@@ -18,6 +18,7 @@
 import copy
 import os
 import sys
+from types import SimpleNamespace
 import bittensor as bt
 from abc import ABC, abstractmethod
 
@@ -101,6 +102,7 @@ class BaseNeuron(ABC):
         base_config = copy.deepcopy(config or BaseNeuron.config())
         self.config = self.config()
         self.config.merge(base_config)
+        self._apply_direct_overrides()
         self.check_config(self.config) 
 
         # Version check
@@ -121,11 +123,11 @@ class BaseNeuron(ABC):
 
         # The wallet holds the cryptographic key pairs for the miner.
 
-        self.wallet = bt.Wallet(config=self.config)
+        self.wallet = self._build_wallet()
         while True:
             try:
                 bt.logging.info("Initializing subtensor and metagraph")
-                self.subtensor = bt.Subtensor(config=self.config)
+                self.subtensor = self._build_subtensor()
                 self.metagraph = self._load_metagraph()
                 break
             except Exception as e:
@@ -151,6 +153,135 @@ class BaseNeuron(ABC):
         )
         self.step = 0
         self.last_update = 0
+
+    def _apply_direct_overrides(self):
+        """Normalize critical runtime values when dotted CLI args are not merged."""
+        self._ensure_namespace("wallet")
+        self._ensure_namespace("subtensor")
+        self._ensure_namespace("axon")
+        self._ensure_namespace("neuron")
+        self._ensure_namespace("miner")
+        self._ensure_namespace("blacklist")
+        if not hasattr(self.config.blacklist, "force_validator_permit"):
+            self.config.blacklist.force_validator_permit = True
+        if not hasattr(self.config.blacklist, "allow_non_registered"):
+            self.config.blacklist.allow_non_registered = False
+        if not hasattr(self.config.blacklist, "allowed_validator_hotkeys"):
+            self.config.blacklist.allowed_validator_hotkeys = []
+
+        netuid = self._first_value(self._cli_arg("--netuid"), os.getenv("POKER44_NETUID"))
+        if netuid not in (None, ""):
+            self.config.netuid = int(netuid)
+        elif getattr(self.config, "netuid", None) is None:
+            self.config.netuid = 126
+
+        uid = self._first_value(self._cli_arg("--neuron.uid"), os.getenv("POKER44_UID"))
+        if uid not in (None, ""):
+            self.config.neuron.uid = int(uid)
+
+        self._set_text("wallet", "name", self._cli_arg("--wallet.name", "--wallet-name"), os.getenv("BT_WALLET_NAME"))
+        self._set_text("wallet", "hotkey", self._cli_arg("--wallet.hotkey", "--wallet-hotkey"), os.getenv("BT_WALLET_HOTKEY"))
+        self._set_text("wallet", "path", self._cli_arg("--wallet.path", "--wallet-path"), os.getenv("BT_WALLET_PATH"))
+        self._set_text("subtensor", "network", self._cli_arg("--subtensor.network"), os.getenv("BT_SUBTENSOR_NETWORK"))
+        self._set_text(
+            "subtensor",
+            "chain_endpoint",
+            self._cli_arg("--subtensor.chain_endpoint"),
+            os.getenv("BT_SUBTENSOR_CHAIN_ENDPOINT"),
+        )
+        self._set_text("miner", "model_path", self._cli_arg("--miner.model_path"), os.getenv("POKER44_MODEL_PATH"))
+        self._set_text("axon", "ip", self._cli_arg("--axon.ip", "--axon-ip"), os.getenv("BT_AXON_IP"))
+        self._set_text("axon", "external_ip", self._cli_arg("--axon.external_ip", "--axon-external-ip"), os.getenv("BT_AXON_EXTERNAL_IP"))
+
+        axon_port = self._first_value(self._cli_arg("--axon.port", "--axon-port"), os.getenv("BT_AXON_PORT"))
+        if axon_port not in (None, ""):
+            self.config.axon.port = int(axon_port)
+        axon_external_port = self._first_value(
+            self._cli_arg("--axon.external_port", "--axon-external-port"),
+            os.getenv("BT_AXON_EXTERNAL_PORT"),
+        )
+        if axon_external_port not in (None, ""):
+            self.config.axon.external_port = int(axon_external_port)
+
+        if self._cli_flag("--blacklist.allow_non_registered"):
+            self.config.blacklist.allow_non_registered = True
+        if self._cli_flag("--blacklist.force_validator_permit"):
+            self.config.blacklist.force_validator_permit = True
+        if self._cli_flag("--no-blacklist.force_validator_permit"):
+            self.config.blacklist.force_validator_permit = False
+
+    def _ensure_namespace(self, name: str):
+        if getattr(self.config, name, None) is None:
+            setattr(self.config, name, SimpleNamespace())
+
+    def _set_text(self, namespace: str, key: str, *values):
+        value = self._first_value(*values)
+        if value not in (None, ""):
+            setattr(getattr(self.config, namespace), key, str(value).strip())
+
+    @staticmethod
+    def _first_value(*values):
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return None
+
+    def _build_wallet(self):
+        """Create wallet explicitly so dotted CLI args survive config merge quirks."""
+        wallet_config = getattr(self.config, "wallet", None)
+        name = (
+            self._cli_arg("--wallet.name", "--wallet-name")
+            or str(getattr(wallet_config, "name", "") or "").strip()
+            or os.getenv("BT_WALLET_NAME", "").strip()
+        )
+        hotkey = (
+            self._cli_arg("--wallet.hotkey", "--wallet-hotkey")
+            or str(getattr(wallet_config, "hotkey", "") or "").strip()
+            or os.getenv("BT_WALLET_HOTKEY", "").strip()
+        )
+        path = (
+            self._cli_arg("--wallet.path", "--wallet-path")
+            or str(getattr(wallet_config, "path", "") or "").strip()
+            or os.getenv("BT_WALLET_PATH", "").strip()
+        )
+
+        if name or hotkey or path:
+            if wallet_config is None:
+                self.config.wallet = SimpleNamespace()
+                wallet_config = self.config.wallet
+            if name:
+                wallet_config.name = name
+            if hotkey:
+                wallet_config.hotkey = hotkey
+            if path:
+                wallet_config.path = path
+
+            kwargs = {}
+            if name:
+                kwargs["name"] = name
+            if hotkey:
+                kwargs["hotkey"] = hotkey
+            if path:
+                kwargs["path"] = path
+
+            try:
+                return bt.Wallet(**kwargs)
+            except TypeError:
+                return bt.Wallet(config=self.config)
+
+        return bt.Wallet(config=self.config)
+
+    def _build_subtensor(self):
+        """Create subtensor directly from network/endpoint when config merge is lossy."""
+        subtensor_config = getattr(self.config, "subtensor", None)
+        chain_endpoint = str(getattr(subtensor_config, "chain_endpoint", "") or "").strip()
+        network = str(getattr(subtensor_config, "network", "") or "").strip()
+
+        if network:
+            return bt.Subtensor(network=network)
+        if chain_endpoint:
+            return bt.Subtensor(network=chain_endpoint)
+        return bt.Subtensor(config=self.config)
 
     def _load_metagraph(self, allow_fallback: bool = True):
         """Load metagraph, retrying full mode when the lite runtime API traps."""
@@ -225,6 +356,10 @@ class BaseNeuron(ABC):
                 if arg.startswith(prefix):
                     return arg[len(prefix):].strip()
         return ""
+
+    @staticmethod
+    def _cli_flag(*names: str) -> bool:
+        return any(arg in names for arg in sys.argv[1:])
 
     @abstractmethod
     async def forward(self, synapse: bt.Synapse) -> bt.Synapse: ...
