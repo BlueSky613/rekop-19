@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 import bittensor as bt
 import os
@@ -21,6 +22,18 @@ def add_args(cls, parser: argparse.ArgumentParser) -> None:
     
     parser.add_argument("--netuid", type=int, help="Subnet netuid", default=126)
     
+    parser.add_argument(
+        "--neuron.name",
+        type=str,
+        default="miner",
+        help="Neuron name used for logging/state directory paths.",
+    )
+    parser.add_argument(
+        "--neuron.uid",
+        type=int,
+        default=int(os.getenv("POKER44_UID", "-1")),
+        help="Registered subnet UID, used only when metagraph RPC fallback is needed.",
+    )
     parser.add_argument(
         "--neuron.device",
         type=str,
@@ -161,11 +174,50 @@ def add_miner_args(cls, parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Placeholder flag retained for compatibility.",
     )
+    parser.add_argument(
+        "--miner.model_path",
+        type=str,
+        default=os.getenv("POKER44_MODEL_PATH", "model/poker44_model.joblib"),
+        help="Path to a local Poker44 miner model artifact.",
+    )
 
 
 
 def check_config(cls, config: "bt.Config"):
     r"""Checks/validates the config namespace object."""
+    if getattr(config, "neuron", None) is None:
+        config.neuron = SimpleNamespace()
+    if not getattr(config.neuron, "name", None):
+        config.neuron.name = "miner"
+    if not getattr(config.neuron, "device", None):
+        config.neuron.device = "cpu"
+    if not getattr(config.neuron, "epoch_length", None):
+        config.neuron.epoch_length = 50
+    if not hasattr(config.neuron, "uid"):
+        config.neuron.uid = -1
+    if not hasattr(config.neuron, "disable_set_weights"):
+        config.neuron.disable_set_weights = False
+    if not hasattr(config.neuron, "wait_for_inclusion"):
+        config.neuron.wait_for_inclusion = True
+    if not hasattr(config.neuron, "wait_for_finalization"):
+        config.neuron.wait_for_finalization = True
+    if not hasattr(config.neuron, "moving_average_alpha"):
+        config.neuron.moving_average_alpha = 0.05
+    if not hasattr(config.neuron, "num_concurrent_forwards"):
+        config.neuron.num_concurrent_forwards = 1
+    if not hasattr(config.neuron, "timeout"):
+        config.neuron.timeout = 180.0
+    if not hasattr(config.neuron, "axon_off"):
+        config.neuron.axon_off = False
+    if getattr(config, "blacklist", None) is None:
+        config.blacklist = SimpleNamespace()
+    if not hasattr(config.blacklist, "force_validator_permit"):
+        config.blacklist.force_validator_permit = True
+    if not hasattr(config.blacklist, "allow_non_registered"):
+        config.blacklist.allow_non_registered = False
+    if not hasattr(config.blacklist, "allowed_validator_hotkeys"):
+        config.blacklist.allowed_validator_hotkeys = []
+
     full_path = os.path.expanduser(
         "{}/{}/{}/netuid{}/{}".format(
             config.logging.logging_dir,  # TODO: change from ~/.bittensor/miners to ~/.bittensor/neurons
