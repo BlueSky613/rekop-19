@@ -1,6 +1,6 @@
 pydantic>=2.6
 requests>=2.31
-bittensor>=9,<10
+bittensor
 python-dotenv>=1.0
 numpy==2.2.6
 scikit-learn==1.7.2
