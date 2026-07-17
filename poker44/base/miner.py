@@ -273,6 +273,15 @@ class BaseMinerNeuron(BaseNeuron):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
         bt.logging.info("resync_metagraph()")
 
+        if getattr(self.metagraph, "is_fallback", False):
+            try:
+                self.metagraph = self._load_metagraph(allow_fallback=False)
+                self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+                bt.logging.info("Recovered full metagraph from RPC.")
+                return
+            except Exception as exc:
+                bt.logging.warning(f"Full metagraph still unavailable: {exc}")
+
         # Sync the metagraph.
         self.metagraph.sync(subtensor=self.subtensor)
 

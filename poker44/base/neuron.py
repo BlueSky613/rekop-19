@@ -17,6 +17,7 @@
 
 import copy
 import os
+import sys
 import bittensor as bt
 from abc import ABC, abstractmethod
 
@@ -29,6 +30,41 @@ import requests
 import re
 from poker44 import version_url
 from poker44 import __version__, __spec_version__
+
+
+class _ScalarInt(int):
+    def item(self):
+        return int(self)
+
+
+class _MinimalMetagraph:
+    """Small miner-only metagraph used when public RPC metagraph APIs trap."""
+
+    is_fallback = True
+
+    def __init__(self, netuid: int, uid: int, hotkey: str, block: int):
+        size = max(256, uid + 1)
+        self.netuid = int(netuid)
+        self.n = size
+        self.uids = list(range(size))
+        self.hotkeys = [""] * size
+        self.hotkeys[uid] = hotkey
+        self.validator_permit = [False] * size
+        self.S = [0.0] * size
+        self.I = [0.0] * size
+        self.last_update = [int(block)] * size
+        self.block = _ScalarInt(block)
+
+    def sync(self, subtensor=None):
+        try:
+            block = int(subtensor.get_current_block()) if subtensor is not None else int(time.time())
+        except Exception:
+            block = int(time.time())
+        self.last_update = [block] * len(self.last_update)
+        self.block = _ScalarInt(block)
+
+    def __repr__(self):
+        return f"MinimalMetagraph(netuid={self.netuid}, n={self.n}, fallback=True)"
 
 
 class BaseNeuron(ABC):
@@ -90,7 +126,7 @@ class BaseNeuron(ABC):
             try:
                 bt.logging.info("Initializing subtensor and metagraph")
                 self.subtensor = bt.Subtensor(config=self.config)
-                self.metagraph = self.subtensor.metagraph(self.config.netuid)
+                self.metagraph = self._load_metagraph()
                 break
             except Exception as e:
                 bt.logging.error(
@@ -115,6 +151,80 @@ class BaseNeuron(ABC):
         )
         self.step = 0
         self.last_update = 0
+
+    def _load_metagraph(self, allow_fallback: bool = True):
+        """Load metagraph, retrying full mode when the lite runtime API traps."""
+        try:
+            return self.subtensor.metagraph(self.config.netuid)
+        except Exception as exc:
+            message = str(exc)
+            if "get_neurons_lite" not in message and "wasm" not in message.lower():
+                raise
+            bt.logging.warning(
+                "Lite metagraph load failed; retrying with lite=False. "
+                f"Original error: {exc}"
+            )
+            try:
+                return self.subtensor.metagraph(self.config.netuid, lite=False)
+            except Exception as full_exc:
+                if not allow_fallback:
+                    raise
+                return self._fallback_metagraph(full_exc)
+
+    def _fallback_metagraph(self, exc: Exception):
+        uid = self._configured_uid()
+        if uid < 0:
+            raise RuntimeError(
+                "Metagraph RPC failed and no fallback UID was configured. "
+                "Run with --neuron.uid <your_registered_uid> or set POKER44_UID."
+            ) from exc
+
+        try:
+            block = int(self.subtensor.get_current_block())
+        except Exception:
+            block = int(time.time())
+
+        bt.logging.warning(
+            "Using minimal miner metagraph fallback because RPC metagraph load failed. "
+            "Validator permit filtering is unavailable until metagraph sync recovers."
+        )
+        return _MinimalMetagraph(
+            netuid=self.config.netuid,
+            uid=uid,
+            hotkey=self.wallet.hotkey.ss58_address,
+            block=block,
+        )
+
+    def _configured_uid(self) -> int:
+        neuron_config = getattr(self.config, "neuron", None)
+        candidates = [
+            getattr(neuron_config, "uid", None),
+            getattr(self.config, "neuron.uid", None),
+            os.getenv("POKER44_UID"),
+            self._cli_arg("--neuron.uid"),
+        ]
+        for value in candidates:
+            if value in (None, ""):
+                continue
+            try:
+                uid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if uid >= 0:
+                return uid
+        return -1
+
+    @staticmethod
+    def _cli_arg(*names: str) -> str:
+        argv = sys.argv[1:]
+        for index, arg in enumerate(argv):
+            for name in names:
+                if arg == name and index + 1 < len(argv):
+                    return argv[index + 1].strip()
+                prefix = f"{name}="
+                if arg.startswith(prefix):
+                    return arg[len(prefix):].strip()
+        return ""
 
     @abstractmethod
     async def forward(self, synapse: bt.Synapse) -> bt.Synapse: ...
