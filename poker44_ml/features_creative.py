@@ -1,11 +1,11 @@
-"""Creative features layered onto the existing combined312 feature set.
+"""Creative features - additional features on top of the combined312 set.
 
-Design principles from noise analysis:
-  - Use only categorical axes: action type, street, and player.
-  - Avoid bet amount and discontinuous sequence axes.
-  - Capture mechanical regularity through similarity, low variance, and correlation.
+Design principles (based on verified noise analysis):
+  - Use only categorical axes (action type, street, player) - noise-free.
+  - Avoid bet-size and non-contiguous-sequence axes - they collapse under noise.
+  - Bot = mechanical regularity -> capture self-similarity, low variance, high correlation.
 
-creative_features(chunk) -> dict, where chunk is the mirrored miner-visible hand list.
+creative_features(chunk) -> dict  (chunk = mirrored miner-visible hand list)
 """
 from __future__ import annotations
 import math
@@ -44,7 +44,7 @@ def _entropy(counts):
 
 
 def _hand_profile(hand):
-    """Categorical profile for one hand."""
+    """Categorical profile of one hand (noise-free axes only)."""
     actions = hand.get("actions") or []
     players = hand.get("players") or []
     streets = hand.get("streets") or []
@@ -75,15 +75,15 @@ def creative_features(chunk):
         return out
     profs = [_hand_profile(h) for h in chunk]
 
-    # ---- 1) Multi-metric self-similarity ----
-    # (a) Pairwise cosine similarity of action distributions.
+    # ---- 1) multi-metric self-similarity (bots resemble themselves) ----
+    # (a) mean pairwise cosine similarity of action profiles (higher = bot)
     sims = []
     for i in range(min(n, 40)):
         for j in range(i + 1, min(n, 40)):
             sims.append(_cosine(profs[i], profs[j]))
     out["cr_sim_action_mean"] = _mean(sims)
-    out["cr_sim_action_std"] = _std(sims)      # variance of similarity values
-    # (b) Sequence uniqueness; lower means more repetition.
+    out["cr_sim_action_std"] = _std(sims)      # variance of similarity itself (bot = low)
+    # (b) sequence uniqueness (lower = repetitive = bot)
     seqs = [p["_seq"] for p in profs]
     out["cr_seq_uniq_ratio"] = len(set(seqs)) / n
     grams = Counter()
@@ -94,7 +94,7 @@ def creative_features(chunk):
     out["cr_seq_bigram_entropy"] = _entropy(list(grams.values()))
     out["cr_seq_top_bigram_share"] = max(grams.values()) / tot if grams else 0.0
 
-    # ---- 2) Higher moments beyond the mean ----
+    # ---- 2) higher distribution moments (beyond the mean) ----
     for key, name in [("_agg", "agg"), ("call", "call"), ("fold", "fold"),
                       ("raise", "raise"), ("_nstreet", "street"), ("_nplayer", "player")]:
         vals = [p[key] for p in profs]
@@ -102,17 +102,17 @@ def creative_features(chunk):
         out[f"cr_{name}_skew"] = _skew(vals)
         out[f"cr_{name}_kurt"] = _kurt(vals)
 
-    # ---- 3) Feature interactions from strong discriminator axes ----
+    # ---- 3) feature interactions (products/ratios of top axes) ----
     sim = out["cr_sim_action_mean"]
     agg_std = out["cr_agg_std"]
     uniq = out["cr_seq_uniq_ratio"]
-    out["cr_x_sim_by_aggstd"] = sim / (agg_std + 1e-6)      # high similarity, low variance
-    out["cr_x_sim_times_uniqinv"] = sim * (1.0 - uniq)       # similarity plus repetition
+    out["cr_x_sim_by_aggstd"] = sim / (agg_std + 1e-6)      # high similarity + low variance = strong bot signal
+    out["cr_x_sim_times_uniqinv"] = sim * (1.0 - uniq)       # similar AND repetitive
     out["cr_x_uniq_by_streetstd"] = uniq / (out["cr_street_std"] + 1e-6)
     out["cr_x_aggstd_times_streetstd"] = agg_std * out["cr_street_std"]
 
-    # ---- 4) Cross-hand regularity ----
-    # Lag-1 autocorrelation of per-hand aggression.
+    # ---- 4) cross-hand regularity (bot = consistent) ----
+    # lag-1 autocorrelation of per-hand aggression - bots repeat patterns
     agg_seq = [p["_agg"] for p in profs]
     if len(agg_seq) >= 3 and _std(agg_seq) > 1e-9:
         a, b = agg_seq[:-1], agg_seq[1:]
@@ -121,7 +121,7 @@ def creative_features(chunk):
         out["cr_agg_autocorr"] = cov / (_std(a) * _std(b) + 1e-12)
     else:
         out["cr_agg_autocorr"] = 0.0
-    # First-half versus second-half drift.
+    # first-half vs second-half drift (bot = no drift)
     if n >= 6:
         h = n // 2
         out["cr_half_agg_drift"] = abs(_mean(agg_seq[:h]) - _mean(agg_seq[h:]))
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     from poker44.validator.payload_view import prepare_hand_for_miner
     d = json.load(open("E:/BIT/127/127/02_benchmark_data/chunks/2026-07-15.json", encoding="utf-8"))
     sc = d["chunks"][0]
-    print("=== Creative feature bot-vs-human discrimination test ===")
+    print("=== creative features: bot vs human discrimination test ===")
     import numpy as np
     feats, ys = [], []
     for bag, y in zip(sc["chunks"], sc["groundTruth"]):
@@ -149,7 +149,7 @@ if __name__ == "__main__":
     ys = np.array(ys)
     M = np.array([[f.get(c, 0.0) for c in cols] for f in feats])
     print(f"creative feature count: {len(cols)}")
-    print("top 8 discriminators:")
+    print("top8 most discriminating:")
     disc = []
     for j, c in enumerate(cols):
         b, h = M[ys == 1, j], M[ys == 0, j]
@@ -157,4 +157,4 @@ if __name__ == "__main__":
             sd = M[:, j].std() + 1e-9
             disc.append((abs(b.mean() - h.mean()) / sd, c, b.mean(), h.mean()))
     for s, c, bm, hm in sorted(disc, reverse=True)[:8]:
-        print(f"  {c:28} bot={bm:7.3f} human={hm:7.3f} separation={s:.2f}")
+        print(f"  {c:28} bot{bm:7.3f} human{hm:7.3f} disc{s:.2f}")

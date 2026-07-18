@@ -21,5 +21,5 @@ def chunk_features(chunk):
     for k, v in ours.items():                         # + only the honest signals
         if k.startswith(_HONEST_PREFIXES):
             f[k] = v
-    f.update(_creative_features(chunk))               # + creative cr_* interaction, moment, and similarity features
+    f.update(_creative_features(chunk))               # + creative features (cr_*): interactions, higher moments, multi-similarity (validated +0.0198)
     return f

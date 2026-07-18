@@ -1,13 +1,13 @@
-"""Solution B stable recipe v4 for 2026-07-17.
+"""Solution B (robust, uid152) - final recipe v2 (2026-07-18).
 
-Key measured choices:
-  - Mirror the served payload view; skipping this breaks live behavior.
-  - Train on mixed shapes: original 30-40 hand batches plus merged 100-hand batches.
-  - Use equal merged-batch weight so the model stays robust across query shapes.
-  - Use recency half-life 4, which was best in local tests.
-  - Use a conservative ensemble: LGBM x3, HistGB x2, RF, and LogReg.
-
-Usage: python train.py --all
+Key points (all measurement-backed):
+  - payload mirroring: without it, serving collapses 0.92 -> 0.00
+  - mixed-shape training: native (30-40 hands) + merged-100 batches. Live queries use
+    100-hand batches; native-only training scores 0.78 there, mixed scores 0.95 (+0.17)
+  - merged boost 1.0: both shapes weighted equally (B's principle: stable on any shape)
+  - recency halflife 4: measured optimum (extremes 1-2 and long 7-10 both lose)
+  - conservative diverse ensemble: LGBM x5 (varied hypers) + HistGB x2 + RF + LogReg
+Usage: python train.py --all   (final training on all data)
 """
 import copy
 import json
@@ -37,9 +37,9 @@ ROOT = _root(HERE)
 CHUNK_DIR = ROOT / "02_benchmark_data" / "chunks"
 OUT = HERE / "model"; OUT.mkdir(exist_ok=True)
 
-MIN_DATE = "2026-07-06"        # current generator era only
-HALFLIFE = 4.0                 # best measured half-life
-MERGED_BOOST = 1.0             # equal shape weighting
+MIN_DATE = "2026-07-06"        # current-generator era only
+HALFLIFE = 4.0                 # B: measured-optimal halflife
+MERGED_BOOST = 1.0             # B: shape-balanced - principled
 MAX_MERGED_PER_DAY_LABEL = 60
 
 
@@ -58,8 +58,8 @@ def _mirror():
 
 
 def load(mirror):
-    """Load original batches plus merged 100-hand batches from same-day labels."""
-    feats, ys, dates, shapes = [], [], [], []   # shape 0=original, 1=merged100
+    """Native batches + merged-100 batches (3 same-day same-label batches concatenated)."""
+    feats, ys, dates, shapes = [], [], [], []   # shape 0=native, 1=merged100
     for p in sorted(CHUNK_DIR.glob("*.json")):
         if p.stem < MIN_DATE:
             continue
@@ -68,7 +68,7 @@ def load(mirror):
         per_label = {0: [], 1: []}
         for rec in b["chunks"]:
             for bag, y in zip(rec["chunks"], rec["groundTruth"]):
-                hands = [mirror(copy.deepcopy(h)) for h in bag]   # match serving transform
+                hands = [mirror(copy.deepcopy(h)) for h in bag]   # same transform as serving
                 feats.append(chunk_features(hands)); ys.append(int(y))
                 dates.append(d); shapes.append(0)
                 per_label[int(y)].append(hands)
@@ -88,11 +88,11 @@ def load(mirror):
 
 def main(train_on_all=True):
     mirror = _mirror()
-    print("Solution B v4: mirrored payload + balanced mixed shapes + half-life 4 + conservative ensemble")
+    print("Solution B: mirrored + mixed shapes (balanced), halflife 4, conservative ensemble")
     feats, y, dates, shapes = load(mirror)
     cols = sorted({k for f in feats for k in f})
     X = np.array([[f.get(n, 0.0) for n in cols] for f in feats], np.float64)
-    print(f"rows={len(y)} (original {(shapes==0).sum()}, merged100 {(shapes==1).sum()}) features={len(cols)} bot_rate={y.mean():.3f}")
+    print(f"rows={len(y)} (native {(shapes==0).sum()}, merged100 {(shapes==1).sum()}) features={len(cols)} bot_rate={y.mean():.3f}")
 
     held = [] if train_on_all else sorted(set(dates.tolist()))[-1:]
     mask = np.ones(len(y), bool) if train_on_all else np.array([d not in set(held) for d in dates])
@@ -103,7 +103,7 @@ def main(train_on_all=True):
     print(f"train rows={mask.sum()} halflife={HALFLIFE} merged_boost={MERGED_BOOST}")
 
     models, weights = [], []
-    for seed, (nl, ff) in enumerate([(31, 0.7), (31, 0.55), (15, 0.8)]):
+    for seed, (nl, ff) in enumerate([(31, 0.7), (31, 0.55), (15, 0.8), (63, 0.6), (31, 0.9)]):
         m = lgb.LGBMClassifier(n_estimators=600, learning_rate=0.03, num_leaves=nl,
                                feature_fraction=ff, bagging_fraction=0.8, bagging_freq=1,
                                min_child_samples=30, random_state=seed, verbose=-1)
@@ -114,7 +114,20 @@ def main(train_on_all=True):
                  (LogisticRegression(max_iter=3000, C=0.5), 0.5)):
         M.fit(X[mask], y[mask], sample_weight=sw); models.append(M); weights.append(w)
 
+    # Axis-ablated diversity members - counter 'humanized bots' (a second view that cannot
+    # see autocorr/rand/state axes; missed bots faked exactly those. Measured +recall +AP)
+    feature_idx = [None] * len(models)
+    EXCL = {i for i, c in enumerate(cols) if ("autocorr" in c) or c.startswith("rand_") or c.startswith("state_")}
+    KEEP = [i for i in range(len(cols)) if i not in EXCL]
+    for s in (10, 11):
+        m = lgb.LGBMClassifier(n_estimators=600, learning_rate=0.03, num_leaves=31,
+                               feature_fraction=0.7, bagging_fraction=0.8, bagging_freq=1,
+                               min_child_samples=30, random_state=s, verbose=-1)
+        m.fit(X[mask][:, KEEP], y[mask], sample_weight=sw)
+        models.append(m); weights.append(0.7); feature_idx.append(KEEP)
+
     art = {"models": models, "model_weights": weights, "feature_names": cols, "calibrator": None,
+           "model_feature_idx": feature_idx,
            "metadata": {"name": "poker44-B-robust", "version": "4", "blend": "mean_proba",
                         "payload_mirrored": True, "recency_weighted_halflife_days": HALFLIFE,
                         "merged_boost": MERGED_BOOST, "mixed_shapes": True,

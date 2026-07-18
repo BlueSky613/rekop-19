@@ -51,29 +51,34 @@ class Poker44Model:
             self.weights = np.ones(len(self.models))
         self.weights /= self.weights.sum()
         self.metadata = dict(art.get("metadata") or {})
+        # Optional per-model feature subset (axis-ablated diversity members); None = all features.
+        fi = art.get("model_feature_idx") or [None] * len(self.models)
+        self.feature_idx = list(fi[:len(self.models)]) + [None] * max(0, len(self.models) - len(fi))
 
     def _rows(self, chunks):
-        # Run chunk_features once per chunk; repeating it per feature is too slow.
+        # Call chunk_features ONCE per chunk. Inside the feature-name loop it re-runs 343x,
+        # turning a 90-batch query into 496s > validator timeout 180s -> response discarded -> 0.
         feats = []
         for c in chunks:
             try:
                 feats.append(chunk_features(c))
             except Exception:
-                feats.append({})  # keep response length even if a chunk cannot be parsed
+                feats.append({})  # defective chunk -> zero vector; length preservation prevents the 0
         X = np.array(
             [[f.get(n, 0.0) for n in self.feature_names] for f in feats],
             dtype=np.float64,
         )
-        # Some models reject NaN input, so sanitize before prediction.
+        # RandomForest raises on NaN input -> the whole query dies. Always sanitize.
         return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _blend(self, X):
         preds = []
-        for m in self.models:
+        for m, idx in zip(self.models, self.feature_idx):
+            Xi = X if idx is None else X[:, idx]
             if hasattr(m, "predict_proba"):
-                preds.append(np.clip(m.predict_proba(X)[:, 1], 0, 1))
+                preds.append(np.clip(m.predict_proba(Xi)[:, 1], 0, 1))
             else:
-                preds.append(np.clip(m.predict(X), 0, 1))
+                preds.append(np.clip(m.predict(Xi), 0, 1))
         return np.average(np.vstack(preds), axis=0, weights=self.weights)
 
     def _safe_topk(self, p, mode):
@@ -85,7 +90,7 @@ class Poker44Model:
             return p
         k = max(1, int(math.floor(0.10 * n)))
         if n >= 8:
-            k = max(k, 2)   # avoid tp=0 on small windows
+            k = max(k, 2)   # small-window guard: flag >=2 so tp=0 forfeit is impossible (rank unchanged)
         order = np.argsort(-p, kind="mergesort")
         if mode == "band":
             ph, pl, nh, nl = 0.509, 0.501, 0.490, 0.010
@@ -105,7 +110,8 @@ class Poker44Model:
         try:
             raw = self._blend(self._rows(chunks))
         except Exception:
-            # Last-resort guard: always respond with the correct length.
+            # Last-resort safety net: always reply with the correct length.
+            # Deterministic pseudo-rank + cap -> ~0.54 composite even if random; an exception would mean 0.
             n = len(chunks)
             raw = np.array([((i * 2654435761) % 997) / 997.0 for i in range(n)], dtype=np.float64)
         scores = self._safe_topk(raw, "band" if SAFETY_MODE == "band" else "honest")

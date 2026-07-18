@@ -71,7 +71,7 @@ def main():
     hand_counts = [r.get("handCount", 0) for r in releases[:5]]
 
     if prev.get("schema") and schema != prev["schema"]:
-        warnings.append(f"SCHEMA CHANGED {prev['schema']} -> {schema} (reparse may be needed)")
+        warnings.append(f"SCHEMA CHANGED {prev['schema']} -> {schema} (may need reparsing)")
     if prev.get("hand_counts") and hand_counts and prev["hand_counts"]:
         if hand_counts[0] and prev["hand_counts"][0] and \
            abs(hand_counts[0] - prev["hand_counts"][0]) / max(prev["hand_counts"][0], 1) > 0.5:

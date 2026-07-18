@@ -152,7 +152,7 @@ class Miner(BaseMinerNeuron):
             return "poker44-B-robust"
         if recipe == "A":
             return "poker44-A-aggressive"
-        return "poker44-standalone"
+        return "poker44-B-robust"
 
     @classmethod
     def _model_version(cls, metadata: dict) -> str:
@@ -162,7 +162,7 @@ class Miner(BaseMinerNeuron):
         env_version = cls._clean_text(os.getenv("POKER44_MODEL_VERSION"))
         if env_version:
             return env_version
-        return cls._clean_text(metadata.get("built")) or "1.0"
+        return cls._clean_text(metadata.get("built")) or "2"
 
     def _reload_watcher(self, every=60):
         """Load a refreshed model without restarting when daily_update updates the joblib."""

@@ -33,7 +33,7 @@ CHUNK_DIR = ROOT / "02_benchmark_data" / "chunks"
 
 
 def _load_mirror():
-    """Use the same payload transform as serving and training."""
+    """Same payload transform as serving (verification must match training)."""
     import sys
     try:
         from poker44.validator.payload_view import prepare_hand_for_miner
@@ -91,21 +91,25 @@ def main():
     import copy
     mirror = _load_mirror()
     m = Poker44Model()
-    F, models, w = m.feature_names, m.models, m.weights
+    F, models = m.feature_names, m.models
     feats, ys, ds = [], [], []
     for p in sorted(CHUNK_DIR.glob("*.json")):
-        b = json.loads(p.read_text()); d = b["release"]["sourceDate"]
+        if p.stem < "2026-07-06":   # current-generator era only (matches training; faster)
+            continue
+        b = json.loads(p.read_text(encoding="utf-8")); d = b["release"]["sourceDate"]
         for rec in b["chunks"]:
             for bag, y in zip(rec["chunks"], rec["groundTruth"]):
-                hands = [mirror(copy.deepcopy(h)) for h in bag]   # match serving transform
+                hands = [mirror(copy.deepcopy(h)) for h in bag]   # same transform as serving
                 feats.append(chunk_features(hands)); ys.append(int(y)); ds.append(d)
     X = np.array([[f.get(n, 0.0) for n in F] for f in feats], dtype=np.float64)
     Y = np.array(ys); D = np.array(ds)
-    P = np.average(np.vstack([mm.predict_proba(X)[:, 1] for mm in models]), axis=0, weights=w)
+    # Per-model feature subsets (model_feature_idx) - ablated members take 291 features only.
+    #   Feeding all 343 features to every model raises. Always go through _blend.
+    P = m._blend(X)
 
     dates = sorted(set(D.tolist())); td = set(dates[-3:])
     print("=" * 62)
-    print(f"joblib submission verification | default SAFETY_MODE={SAFETY_MODE} | models={len(models)}")
+    print(f"joblib submission check | default SAFETY_MODE={SAFETY_MODE} | {len(models)} models")
     print("=" * 62)
     for mode in ("honest", "band"):
         tem = np.array([d in td for d in D])
@@ -122,8 +126,9 @@ def main():
                     ff += 1
         print(f"[{mode:>6}] holdout comp={r['composite']:.4f} AP={r['ap']:.4f} "
               f"R@5%={r['recall']:.4f} safety={r['safety']:.2f} hfpr={r['hard_fpr']:.3f} | "
-              f"batches={nb} forfeits={ff} min={min(mins):.3f}")
-    print("\nlive #1=0.5511 on practice baseline, not directly comparable | 152-forfeit: all batches avoided")
+              f"batches{nb} forfeits{ff} min{min(mins):.3f}")
+    print("\nNOTE: deployed model trains on all data, so figures above are in-sample "
+          "(wiring check). See daily forward tests for skill. 0 forfeits = safe to deploy")
 
 
 if __name__ == "__main__":
