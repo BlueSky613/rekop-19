@@ -51,6 +51,10 @@ class Poker44Model:
             self.weights = np.ones(len(self.models))
         self.weights /= self.weights.sum()
         self.metadata = dict(art.get("metadata") or {})
+        self.blend_mode = os.environ.get(
+            "POKER44_BLEND_MODE",
+            str(self.metadata.get("blend") or "mean_proba"),
+        ).strip().lower()
         # Optional per-model feature subset (axis-ablated diversity members); None = all features.
         fi = art.get("model_feature_idx") or [None] * len(self.models)
         self.feature_idx = list(fi[:len(self.models)]) + [None] * max(0, len(self.models) - len(fi))
@@ -79,7 +83,16 @@ class Poker44Model:
                 preds.append(np.clip(m.predict_proba(Xi)[:, 1], 0, 1))
             else:
                 preds.append(np.clip(m.predict(Xi), 0, 1))
-        return np.average(np.vstack(preds), axis=0, weights=self.weights)
+        matrix = np.vstack(preds)
+        if self.blend_mode in {"rank", "rank_mean", "weighted_rank"}:
+            ranked = np.empty_like(matrix, dtype=np.float64)
+            for row_index, values in enumerate(matrix):
+                order = np.argsort(values, kind="mergesort")
+                ranks = np.empty(len(values), dtype=np.float64)
+                ranks[order] = np.arange(len(values), dtype=np.float64)
+                ranked[row_index] = ranks / max(len(values) - 1, 1)
+            matrix = ranked
+        return np.average(matrix, axis=0, weights=self.weights)
 
     def _safe_topk(self, p, mode):
         """152-proof: reward ignores magnitude (AP/recall use ranking; safety uses the

@@ -110,6 +110,10 @@ class Miner(BaseMinerNeuron):
             },
         )
         self.manifest_digest = manifest_digest(self.model_manifest)
+        self.send_model_manifest = (
+            os.getenv("POKER44_SEND_MODEL_MANIFEST", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         print(
             "[MODEL] manifest "
             f"name={self.model_manifest.get('model_name', '')} "
@@ -117,6 +121,11 @@ class Miner(BaseMinerNeuron):
             f"repo={self.model_manifest.get('repo_url', '')} "
             f"commit={self.model_manifest.get('repo_commit', '')} "
             f"digest={self.manifest_digest}",
+            flush=True,
+        )
+        print(
+            f"[MODEL] send_manifest={self.send_model_manifest} "
+            "(set POKER44_SEND_MODEL_MANIFEST=1 to publish)",
             flush=True,
         )
         bt.logging.info(
@@ -204,8 +213,9 @@ class Miner(BaseMinerNeuron):
             scores = [0.55 if i < k else 0.05 for i in range(n)]
         synapse.risk_scores = scores
         synapse.predictions = [s >= 0.5 for s in scores]
-        synapse.model_manifest = dict(self.model_manifest)
-        # Attach the manifest so validators can review the deployed implementation.
+        synapse.model_manifest = (
+            dict(self.model_manifest) if self.send_model_manifest else None
+        )
         bt.logging.info(f"Scored {len(chunks)} chunks | mean={sum(scores)/max(len(scores),1):.3f}")
         try:
             vhot = getattr(getattr(synapse, "dendrite", None), "hotkey", None)  # querying validator

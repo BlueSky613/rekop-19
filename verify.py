@@ -16,20 +16,10 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from poker44_ml.combined import chunk_features
 from poker44_ml.inference import Poker44Model, SAFETY_MODE
-
-
-def _find_repo_root(start):
-    p = start
-    for _ in range(7):
-        if (p / "02_benchmark_data").exists():
-            return p
-        p = p.parent
-    return start
+from train import _source_files, _source_records
 
 
 HERE = Path(__file__).resolve().parent
-ROOT = _find_repo_root(HERE)
-CHUNK_DIR = ROOT / "02_benchmark_data" / "chunks"
 
 
 def _load_mirror():
@@ -39,8 +29,10 @@ def _load_mirror():
         from poker44.validator.payload_view import prepare_hand_for_miner
         return prepare_hand_for_miner
     except Exception:
-        for cand in [ROOT / "10_relearn_2026-07-15" / "Poker44-subnet-fresh",
-                     ROOT / "01_subnet_code" / "Poker44-subnet"]:
+        for cand in [
+            HERE.parent / "127" / "10_relearn_2026-07-15" / "Poker44-subnet-fresh",
+            HERE.parent / "127" / "01_subnet_code" / "Poker44-subnet",
+        ]:
             if (cand / "poker44" / "validator" / "payload_view.py").exists():
                 sys.path.insert(0, str(cand))
                 from poker44.validator.payload_view import prepare_hand_for_miner
@@ -93,17 +85,14 @@ def main():
     m = Poker44Model()
     F, models = m.feature_names, m.models
     feats, ys, ds = [], [], []
-    for p in sorted(CHUNK_DIR.glob("*.json")):
-        if p.stem < "2026-07-06":   # current-generator era only (matches training; faster)
-            continue
-        b = json.loads(p.read_text(encoding="utf-8")); d = b["release"]["sourceDate"]
-        for rec in b["chunks"]:
+    for d, path in _source_files():
+        for rec in _source_records(path):
             for bag, y in zip(rec["chunks"], rec["groundTruth"]):
                 hands = [mirror(copy.deepcopy(h)) for h in bag]   # same transform as serving
                 feats.append(chunk_features(hands)); ys.append(int(y)); ds.append(d)
     X = np.array([[f.get(n, 0.0) for n in F] for f in feats], dtype=np.float64)
     Y = np.array(ys); D = np.array(ds)
-    # Per-model feature subsets (model_feature_idx) - ablated members take 291 features only.
+    # Per-model feature subsets (model_feature_idx) keep ablated members shape-compatible.
     #   Feeding all 343 features to every model raises. Always go through _blend.
     P = m._blend(X)
 
