@@ -7,6 +7,7 @@ Poker44-subnet checkout (replacing neurons/miner.py), then run like the referenc
 import json
 import hashlib
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -79,10 +80,28 @@ class Miner(BaseMinerNeuron):
         # Auto-reload when daily_update refreshes the joblib artifact.
         self._model_mtime = _MODEL_PATH.stat().st_mtime if _MODEL_PATH.exists() else 0.0
         threading.Thread(target=self._reload_watcher, daemon=True).start()
+        self.send_model_manifest = (
+            os.getenv("POKER44_SEND_MODEL_MANIFEST", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        runtime_repo_commit = self._repo_head(repo_root)
+        runtime_repo_url = self._normalize_repo_url(self._repo_url(repo_root))
+        configured_repo_commit = os.getenv("POKER44_MODEL_REPO_COMMIT", "").strip()
+        if (
+            self.send_model_manifest
+            and configured_repo_commit
+            and runtime_repo_commit
+            and configured_repo_commit != runtime_repo_commit
+        ):
+            raise RuntimeError(
+                "POKER44_MODEL_REPO_COMMIT does not match the deployed Git HEAD: "
+                f"configured={configured_repo_commit} runtime={runtime_repo_commit}"
+            )
         self.model_manifest = build_local_model_manifest(
             repo_root=repo_root,
             implementation_files=[
                 repo_root / "miner.py",
+                repo_root / "train.py",
                 repo_root / "poker44_ml" / "inference.py",
                 repo_root / "poker44_ml" / "combined.py",
                 repo_root / "poker44_ml" / "features.py",
@@ -94,6 +113,8 @@ class Miner(BaseMinerNeuron):
                 "model_version": self._model_version(self.model.metadata),
                 "framework": "sklearn+lightgbm-ensemble (joblib)",
                 "license": "MIT",
+                "repo_url": runtime_repo_url,
+                "repo_commit": runtime_repo_commit,
                 "artifact_sha256": self._sha256_file(_MODEL_PATH) if _MODEL_PATH.exists() else "",
                 "training_data_statement": (
                     "Trained only on the public Poker44 benchmark "
@@ -110,10 +131,6 @@ class Miner(BaseMinerNeuron):
             },
         )
         self.manifest_digest = manifest_digest(self.model_manifest)
-        self.send_model_manifest = (
-            os.getenv("POKER44_SEND_MODEL_MANIFEST", "0").strip().lower()
-            in {"1", "true", "yes", "on"}
-        )
         print(
             "[MODEL] manifest "
             f"name={self.model_manifest.get('model_name', '')} "
@@ -147,6 +164,47 @@ class Miner(BaseMinerNeuron):
     @staticmethod
     def _clean_text(value) -> str:
         return str(value or "").strip()
+
+    @staticmethod
+    def _normalize_repo_url(url: str) -> str:
+        cleaned = str(url or "").strip()
+        if cleaned.startswith("git@"):
+            host_path = cleaned.split(":", 1)
+            if len(host_path) == 2:
+                host = host_path[0][4:]
+                path = host_path[1]
+                cleaned = f"https://{host}/{path}"
+        if cleaned.endswith(".git"):
+            cleaned = cleaned[:-4]
+        return cleaned
+
+    @staticmethod
+    def _repo_head(repo_root: Path) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return completed.stdout.strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _repo_url(repo_root: Path) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return completed.stdout.strip()
+        except Exception:
+            return ""
 
     @classmethod
     def _model_name(cls, metadata: dict) -> str:
