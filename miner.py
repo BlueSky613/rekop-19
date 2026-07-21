@@ -300,8 +300,13 @@ if __name__ == "__main__":
         print("[STARTUP] Poker44 miner running", flush=True)
         bt.logging.info("Poker44 submission miner running...")
         while True:
+            metagraph_block = getattr(miner.metagraph, "block", "unknown")
+            try:
+                metagraph_block = int(metagraph_block.item())
+            except (AttributeError, TypeError, ValueError):
+                pass
             print(
-                f"[HEARTBEAT] uid={miner.uid} block={miner.block} "
+                f"[HEARTBEAT] uid={miner.uid} block={metagraph_block} "
                 f"incentive={miner.metagraph.I[miner.uid]}",
                 flush=True,
             )
