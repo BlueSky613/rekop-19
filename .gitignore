@@ -212,3 +212,9 @@ hands_for_validator/poker_hands_from_rar.json
 
 # Local Weights & Biases runs/artifacts
 wandb/
+capture/
+
+# Trained artifact ships out of band, never in the public repo.
+model/
+capture/
+queries.jsonl

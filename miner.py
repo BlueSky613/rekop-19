@@ -27,6 +27,7 @@ from poker44.utils.model_manifest import build_local_model_manifest, manifest_di
 from poker44.validator.synapse import DetectionSynapse
 
 from poker44_ml.inference import Poker44Model, SAFETY_MODE, _MODEL as _MODEL_PATH
+from poker44_ml import live_capture
 
 # Report per-query validator and chunk scores to the optional live dashboard.
 # To send to a remote dashboard, set POKER44_REPORT_URL=http://<dashboard-ip>:8127.
@@ -80,8 +81,16 @@ class Miner(BaseMinerNeuron):
         # Auto-reload when daily_update refreshes the joblib artifact.
         self._model_mtime = _MODEL_PATH.stat().st_mtime if _MODEL_PATH.exists() else 0.0
         threading.Thread(target=self._reload_watcher, daemon=True).start()
+        # Publish the manifest by default. It evaluates to compliance status
+        # "transparent" (all required fields present, no policy violations, no
+        # suspicion flags), and withholding it leaves the miner recorded as
+        # "opaque" with nothing for a reviewer to verify against. Set
+        # POKER44_SEND_MODEL_MANIFEST=0 to withhold it.
+        # Only publish from a commit that exists in the public repo: the manifest
+        # declares the local git HEAD, so serving an unpushed commit would
+        # advertise a revision nobody can resolve.
         self.send_model_manifest = (
-            os.getenv("POKER44_SEND_MODEL_MANIFEST", "0").strip().lower()
+            os.getenv("POKER44_SEND_MODEL_MANIFEST", "1").strip().lower()
             in {"1", "true", "yes", "on"}
         )
         runtime_repo_commit = self._repo_head(repo_root)
@@ -99,6 +108,8 @@ class Miner(BaseMinerNeuron):
             )
         self.model_manifest = build_local_model_manifest(
             repo_root=repo_root,
+            # Every module that shapes a prediction, so the published hash describes
+            # what actually runs. combined.py merges all five extractors here.
             implementation_files=[
                 repo_root / "miner.py",
                 repo_root / "train.py",
@@ -106,7 +117,9 @@ class Miner(BaseMinerNeuron):
                 repo_root / "poker44_ml" / "combined.py",
                 repo_root / "poker44_ml" / "features.py",
                 repo_root / "poker44_ml" / "features_creative.py",
-                repo_root / "poker44_ml" / "features_leader.py",
+                repo_root / "poker44_ml" / "features_leader_full.py",
+                repo_root / "poker44_ml" / "features_ordering.py",
+                repo_root / "poker44_ml" / "features_ngram.py",
             ],
             defaults={
                 "model_name": self._model_name(self.model.metadata),
@@ -124,8 +137,9 @@ class Miner(BaseMinerNeuron):
                 "private_data_attestation": "Does not train on validator-only evaluation data.",
                 "inference_mode": "local",
                 "notes": (
-                    f"2026-07-17 B standalone joblib; safety mode={SAFETY_MODE}; "
-                    f"models={len(self.model.models)}; features={len(self.model.feature_names)}."
+                    f"Widest-basis percentile-rank ensemble; safety mode={SAFETY_MODE}; "
+                    f"models={len(self.model.models)}; features={len(self.model.feature_names)}; "
+                    "inputs are within-batch percentile ranks; flags the top 10% of each query."
                 ),
                 "open_source": True,
             },
@@ -280,12 +294,29 @@ class Miner(BaseMinerNeuron):
             _report_query(getattr(self, "uid", None), vhot, scores)
         except Exception:
             pass
+        # Diagnostic-only payload capture (dedup by sha; never used for training).
+        live_capture.capture(chunks)
         mean_score = sum(scores) / len(scores) if scores else 0.0
         print(
             f"[FORWARD] scored chunks={len(chunks)} scores={len(scores)} "
             f"mean={mean_score:.4f} first_scores={[round(score, 4) for score in scores[:20]]}",
             flush=True,
         )
+        # Transfer-gap diagnostics. Read-only from the model's stashed aggregates;
+        # wrapped so logging can never affect the response that was already built.
+        try:
+            d = getattr(self.model, "_last_diag", {}) or {}
+            if d.get("n"):
+                warn = "  <<< COLLAPSE (live scores not separating)" if d.get("collapse") else ""
+                print(
+                    f"[DIAG] n={d.get('n')} raw_mean={d.get('raw_mean')} raw_std={d.get('raw_std')} "
+                    f"raw_min={d.get('raw_min')} raw_max={d.get('raw_max')} "
+                    f"raw_p90={d.get('raw_p90')} raw_spread={d.get('raw_spread_p90_p10')} "
+                    f"hard_flags={d.get('hard_flags')}{warn}",
+                    flush=True,
+                )
+        except Exception:
+            pass
         return synapse
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
@@ -300,13 +331,8 @@ if __name__ == "__main__":
         print("[STARTUP] Poker44 miner running", flush=True)
         bt.logging.info("Poker44 submission miner running...")
         while True:
-            metagraph_block = getattr(miner.metagraph, "block", "unknown")
-            try:
-                metagraph_block = int(metagraph_block.item())
-            except (AttributeError, TypeError, ValueError):
-                pass
             print(
-                f"[HEARTBEAT] uid={miner.uid} block={metagraph_block} "
+                f"[HEARTBEAT] uid={miner.uid} block={miner.block} "
                 f"incentive={miner.metagraph.I[miner.uid]}",
                 flush=True,
             )
