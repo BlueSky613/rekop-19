@@ -24,6 +24,9 @@ from poker44_ml.features_ordering import ordering_features as _ordering
 from poker44_ml.features import chunk_features as _ours
 from poker44_ml.features_creative import creative_features as _creative
 from poker44_ml.features_ngram import ngram_features as _ngram
+from poker44_ml.features_selfconsistency import selfconsistency_features as _selfcons
+from poker44_ml.features_secondorder import second_order_features as _secondorder
+from poker44_ml.features_compress import compress_features as _compress
 
 
 def chunk_features(chunk):
@@ -32,4 +35,7 @@ def chunk_features(chunk):
     f.update(_ours(chunk))            # + 91 of our own signals
     f.update(_creative(chunk))        # + 31 aggression shape statistics
     f.update(_ngram(chunk))           # + hand action-sequence n-grams
+    f.update(_selfcons(chunk))        # + self-consistency measures
+    f.update(_secondorder(chunk))     # + per-hand statistic distributions
+    f.update(_compress(chunk))        # + compression / repetition measures
     return f
