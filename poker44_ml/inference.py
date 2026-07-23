@@ -169,10 +169,28 @@ class Poker44Model:
         from here -- the provider only asks for `require_mixed`, never a ratio --
         so which side of that trade wins cannot be computed offline, only observed
         from live scores. This setting deliberately buys forfeit protection with
-        safety margin."""
+        safety margin.
+
+        POKER44_FLAG_FRACTION overrides the 0.10 default. It exists to measure the
+        live bot density along our own ranking, which no offline set can tell us:
+        AP and recall read only the ranking, so two miners serving the same model at
+        different K differ in the safety term alone, and
+
+            reward(K1) - reward(K2) = 0.30 * (safety(K1) - safety(K2))
+
+        turns a pair of live scores into the count of humans between those two
+        depths. At K=0.10 safety saturates at 1.0 and carries no information, which
+        is why the measurement needs a deeper probe. Do not set it near 1.0: once
+        every human is flagged safety hits 0 and scoring.py zeroes the whole reward,
+        destroying the reading it was meant to produce."""
         n = len(p)
         k_min = 2 if n >= 8 else 1
-        k = int(0.10 * n)
+        try:
+            frac = float(os.environ.get("POKER44_FLAG_FRACTION", "0.10"))
+        except ValueError:
+            frac = 0.10
+        frac = min(0.90, max(0.01, frac))
+        k = int(frac * n)
         return max(k_min, min(k, n))
 
     def _safe_topk(self, p, mode):
